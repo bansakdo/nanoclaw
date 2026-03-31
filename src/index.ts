@@ -296,6 +296,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
+      // Clear typing indicator as soon as the agent result is received —
+      // the container stays alive for IDLE_TIMEOUT after this, so waiting
+      // for runAgent() to return would leave "typing..." visible for up to 30min.
+      await channel.setTyping?.(chatJid, false);
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
     }
@@ -410,7 +414,9 @@ async function runAgent(
       const isStaleSession =
         sessionId &&
         output.error &&
-        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(output.error);
+        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(
+          output.error,
+        );
 
       if (isStaleSession) {
         logger.warn(
