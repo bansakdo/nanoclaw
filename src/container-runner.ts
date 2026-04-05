@@ -13,6 +13,9 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  ANTHROPIC_BASE_URL,
+  ANTHROPIC_AUTH_TOKEN,
+  MODEL_NAME,
   OLLAMA_ADMIN_TOOLS,
   ONECLI_URL,
   TIMEZONE,
@@ -252,6 +255,16 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+
+  // Custom LLM endpoint (e.g. local Ollama) — overrides OneCLI's default Anthropic config.
+  // Set ANTHROPIC_BASE_URL in .env to point at any Anthropic-compatible API.
+  if (ANTHROPIC_BASE_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
+    args.push('-e', `ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN || 'dummy'}`);
+  }
+  if (MODEL_NAME) {
+    args.push('-e', `MODEL_NAME=${MODEL_NAME}`);
   }
 
   // Runtime-specific args for host gateway resolution
