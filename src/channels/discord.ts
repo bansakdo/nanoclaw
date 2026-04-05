@@ -5,6 +5,11 @@ import {
   Message,
   TextChannel,
 } from 'discord.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { writeFile, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -16,6 +21,62 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+const execFileAsync = promisify(execFile);
+
+const WHISPER_MODEL =
+  process.env.WHISPER_MODEL ||
+  `${process.env.HOME}/Library/Application Support/whisper-cpp/ggml-small.bin`;
+
+async function transcribeAudio(
+  audioUrl: string,
+  audioName: string,
+): Promise<string | null> {
+  const base = join(tmpdir(), `discord-audio-${Date.now()}`);
+  const tmpInput = `${base}-${audioName}`;
+  const tmpWav = `${base}.wav`;
+  try {
+    const audioResponse = await fetch(audioUrl);
+    if (!audioResponse.ok) return null;
+    const buffer = Buffer.from(await audioResponse.arrayBuffer());
+    await writeFile(tmpInput, buffer);
+
+    // Convert to wav (whisper-cli handles wav best; ffmpeg handles ogg/opus)
+    // Use full paths since launchd doesn't inherit shell PATH
+    const ffmpeg = '/opt/homebrew/bin/ffmpeg';
+    const whisperCli = '/opt/homebrew/bin/whisper-cli';
+    await execFileAsync(ffmpeg, [
+      '-y',
+      '-i',
+      tmpInput,
+      '-ar',
+      '16000',
+      '-ac',
+      '1',
+      '-c:a',
+      'pcm_s16le',
+      tmpWav,
+    ]);
+
+    const { stdout } = await execFileAsync(whisperCli, [
+      '-m',
+      WHISPER_MODEL,
+      '-f',
+      tmpWav,
+      '--no-timestamps',
+      '--language',
+      'auto',
+    ]);
+    const text = stdout.trim() || null;
+    return text;
+  } catch (err) {
+    logger.error({ err }, 'Whisper transcription failed');
+    return null;
+  } finally {
+    await unlink(tmpInput).catch(() => {});
+    await unlink(tmpWav).catch(() => {});
+  }
+}
 
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
@@ -30,6 +91,8 @@ export class DiscordChannel implements Channel {
   private opts: DiscordChannelOpts;
   private botToken: string;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  // Channels where the last message was a voice message → reply with TTS
+  private ttsChannels = new Set<string>();
 
   constructor(botToken: string, opts: DiscordChannelOpts) {
     this.botToken = botToken;
@@ -93,21 +156,38 @@ export class DiscordChannel implements Channel {
         }
       }
 
+      // Text messages reset TTS mode
+      if (message.attachments.size === 0 && content) {
+        this.ttsChannels.delete(chatJid);
+      }
+
       // Handle attachments — store placeholders so the agent knows something was sent
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map(
-          (att) => {
+        const attachmentDescriptions = await Promise.all(
+          [...message.attachments.values()].map(async (att) => {
             const contentType = att.contentType || '';
             if (contentType.startsWith('image/')) {
               return `[Image: ${att.name || 'image'}]`;
             } else if (contentType.startsWith('video/')) {
               return `[Video: ${att.name || 'video'}]`;
             } else if (contentType.startsWith('audio/')) {
+              if (att.url) {
+                const transcript = await transcribeAudio(
+                  att.url,
+                  att.name || 'audio.ogg',
+                );
+                if (transcript) {
+                  logger.info({ name: att.name }, 'Discord audio transcribed');
+                  this.ttsChannels.add(chatJid);
+                  return `[Voice message: ${transcript}]`;
+                }
+              }
+              this.ttsChannels.delete(chatJid);
               return `[Audio: ${att.name || 'audio'}]`;
             } else {
               return `[File: ${att.name || 'file'}]`;
             }
-          },
+          }),
         );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
@@ -207,17 +287,24 @@ export class DiscordChannel implements Channel {
       }
 
       const textChannel = channel as TextChannel;
+      const useTts = this.ttsChannels.has(jid);
 
       // Discord has a 2000 character limit per message — split if needed
       const MAX_LENGTH = 2000;
       if (text.length <= MAX_LENGTH) {
-        await textChannel.send(text);
+        await textChannel.send({ content: text, tts: useTts });
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await textChannel.send(text.slice(i, i + MAX_LENGTH));
+          await textChannel.send({
+            content: text.slice(i, i + MAX_LENGTH),
+            tts: useTts,
+          });
         }
       }
-      logger.info({ jid, length: text.length }, 'Discord message sent');
+      logger.info(
+        { jid, length: text.length, tts: useTts },
+        'Discord message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Discord message');
     }
