@@ -11,7 +11,11 @@ import { writeFile, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import fs from 'fs';
+import path from 'path';
+
+import { ASSISTANT_NAME, DATA_DIR, TRIGGER_PATTERN } from '../config.js';
+import { deleteSession } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -229,6 +233,41 @@ export class DiscordChannel implements Channel {
           { chatJid, chatName },
           'Message from unregistered Discord channel',
         );
+        return;
+      }
+
+      // Handle /compact command — summarize conversation history via SDK compact
+      if (content.trim().toLowerCase() === '/compact') {
+        this.opts.onMessage(chatJid, {
+          id: msgId,
+          chat_jid: chatJid,
+          sender,
+          sender_name: senderName,
+          content: `@${ASSISTANT_NAME} /compact`,
+          timestamp,
+          is_from_me: false,
+        });
+        return;
+      }
+
+      // Handle /clear command — reset session context (DB + session files on disk)
+      if (content.trim().toLowerCase() === '/clear') {
+        deleteSession(group.folder);
+        const sessionDir = path.join(
+          DATA_DIR,
+          'sessions',
+          group.folder,
+          '.claude',
+          'projects',
+        );
+        if (fs.existsSync(sessionDir)) {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+        logger.info(
+          { chatJid, group: group.name },
+          'Session cleared via /clear command',
+        );
+        await message.reply('세션이 초기화됐습니다.');
         return;
       }
 
