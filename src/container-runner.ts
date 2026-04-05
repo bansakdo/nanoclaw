@@ -259,9 +259,17 @@ async function buildContainerArgs(
 
   // Custom LLM endpoint (e.g. local Ollama) — overrides OneCLI's default Anthropic config.
   // Set ANTHROPIC_BASE_URL in .env to point at any Anthropic-compatible API.
+  // Also add the host to NO_PROXY so OneCLI's HTTP proxy doesn't intercept these requests.
   if (ANTHROPIC_BASE_URL) {
     args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
     args.push('-e', `ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN || 'dummy'}`);
+    try {
+      const llmHost = new URL(ANTHROPIC_BASE_URL).hostname;
+      args.push('-e', `NO_PROXY=${llmHost}`);
+      args.push('-e', `no_proxy=${llmHost}`);
+    } catch {
+      // ignore invalid URL
+    }
   }
   if (MODEL_NAME) {
     args.push('-e', `MODEL_NAME=${MODEL_NAME}`);

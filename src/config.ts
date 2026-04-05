@@ -27,8 +27,7 @@ export const ANTHROPIC_BASE_URL =
   process.env.ANTHROPIC_BASE_URL || envConfig.ANTHROPIC_BASE_URL;
 export const ANTHROPIC_AUTH_TOKEN =
   process.env.ANTHROPIC_AUTH_TOKEN || envConfig.ANTHROPIC_AUTH_TOKEN;
-export const MODEL_NAME =
-  process.env.MODEL_NAME || envConfig.MODEL_NAME;
+export const MODEL_NAME = process.env.MODEL_NAME || envConfig.MODEL_NAME;
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
