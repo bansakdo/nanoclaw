@@ -58,6 +58,10 @@ interface SDKUserMessage {
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+
+// Auto-compact threshold: compact session when message count exceeds this value.
+// Each message ~440 tokens on average; 80 msgs ≈ 35K tokens (just over 32K context).
+const AUTO_COMPACT_THRESHOLD = 80;
 const IPC_POLL_MS = 500;
 
 /**
@@ -258,6 +262,27 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Count messages in the current session JSONL file.
+ * Returns 0 if session not found or unreadable.
+ */
+function countSessionMessages(sessionId: string): number {
+  const claudeDir = '/home/node/.claude/projects';
+  if (!fs.existsSync(claudeDir)) return 0;
+  for (const projectDir of fs.readdirSync(claudeDir)) {
+    const jsonlPath = path.join(claudeDir, projectDir, `${sessionId}.jsonl`);
+    if (fs.existsSync(jsonlPath)) {
+      try {
+        const lines = fs.readFileSync(jsonlPath, 'utf-8').trim().split('\n').filter(Boolean);
+        return lines.length;
+      } catch {
+        return 0;
+      }
+    }
+  }
+  return 0;
 }
 
 /**
@@ -577,8 +602,20 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
-  // Query loop: run query → wait for IPC message → run new query → repeat
+  // Auto-compact: if session has accumulated too many messages, compact before the main query.
   let resumeAt: string | undefined;
+  if (sessionId) {
+    const msgCount = countSessionMessages(sessionId);
+    if (msgCount > AUTO_COMPACT_THRESHOLD) {
+      log(`Auto-compacting session (${msgCount} messages > threshold ${AUTO_COMPACT_THRESHOLD})`);
+      const compactResult = await runQuery('/compact', sessionId, mcpServerPath, containerInput, sdkEnv);
+      if (compactResult.newSessionId) sessionId = compactResult.newSessionId;
+      if (compactResult.lastAssistantUuid) resumeAt = compactResult.lastAssistantUuid;
+      log('Auto-compact complete');
+    }
+  }
+
+  // Query loop: run query → wait for IPC message → run new query → repeat
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
